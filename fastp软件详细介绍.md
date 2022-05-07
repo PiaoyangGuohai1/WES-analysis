@@ -39,7 +39,7 @@ fastp -i reads.1.fq.gz -I reads.2.fq.gz -o clean.1.fq.gz -O clean.2.fq.gz -z 4 -
 
 ### 主要参数
 
-```shell
+```
 ## I/O 相关
 -i, --in1    输入read1文件名  
 -o, --out1   输出read1文件名
