@@ -12,7 +12,8 @@ mkdir 03_markdup # 标记重复
 mkdir 04_bqsr # 重新校准碱基质量值
 mkdir 05_gvcf # gvcf文件
 mkdir 06_joint_genotype # joint-genotype
-mkdir 07_BQSR
+mkdir 07_VQSR # 变异质控
+mkdir 08_annovar # 位点注释
 mkdir tmp # 临时文件存放，gatk过程中会用到
 ```
 
@@ -85,7 +86,7 @@ fastp \
 
 ### 参数说明：
 
-[fastp软件详细介绍](https://github.com/PiaoyangGuohai1/WES-analysis/blob/main/fastp%E8%BD%AF%E4%BB%B6%E8%AF%A6%E7%BB%86%E4%BB%8B%E7%BB%8D.md)
+[[fastp质控报告解读]]
 
 ### 质控结果查看：
 
@@ -237,6 +238,21 @@ samtools view -f 1024 03_markdup/AD2021001.markdup.bam | less
 
 
 
+### 针对低map质量的reads进行过滤
+
+可以先抽取一部分bam文件在IGV中进行查看，可以看到大量由于map质量低（MAPQ值）导致的空reads。
+
+参考：[MAPQ](https://www.jianshu.com/p/9c87bba244d8)和[高通量比对的质量MAPQ](https://zhuanlan.zhihu.com/p/35495052)
+
+过滤后，构建索引。
+
+```
+samtools view -bSq 10 03_markdup/AD2021001.sorted.markdup.bam > 03_markdup/AD2021001.map.filtered.bam
+samtools index 03_markdup/AD2021001.map.filtered.bam
+```
+
+
+
 ### 为BAM文件创建索引
 
 作用：能够让我们可以随机访问这个文件中的任意位置，而且**后面的步骤也要求这个BAM文件一定要有索引**，完成后得到bam.bai文件
@@ -244,6 +260,12 @@ samtools view -f 1024 03_markdup/AD2021001.markdup.bam | less
 ```shell
 samtools index 03_markdup/AD2021001.sorted.markdup.bam
 ```
+
+
+
+### 使用IGV查看bam文件
+
+[肿瘤外显子数据处理系列教程（番外篇）bam文件载入igv可视化](https://mp.weixin.qq.com/s?__biz=MzUzMTEwODk0Ng==&mid=2247488497&idx=2&sn=ccee8550494e4aef673969857dfe7dc5&scene=21#wechat_redirect)
 
 
 
@@ -275,7 +297,7 @@ gatk IndexFeatureFile -I resources_broad_hg38_v0_Mills_and_1000G_gold_standard.i
 
 所有数据库文件如下图所示：
 
-![image-20220506114513973](https://raw.githubusercontent.com/PiaoyangGuohai1/Typora-image/main/202205061757274.png)
+![image-20220506114513973](https://markdown-1300560293.cos.ap-guangzhou.myqcloud.com/markdown/202205061757274.png)
 
 ### 第二步：重新校准碱基质量值
 
@@ -302,12 +324,12 @@ bed=00_ref/bed/interval.list
 ```shell
 gatk --java-options "-Xmx20G -Djava.io.tmpdir=./tmp" BaseRecalibrator \
 -R $hg38_ref \
--I 03_markdup/AD2021002.markdup.bam \
+-I 03_markdup/AD2021001.map.filtered.bam \
 --known-sites $hg38_vcf/resources_broad_hg38_v0_1000G_phase1.snps.high_confidence.hg38.vcf \
 --known-sites $hg38_vcf/resources_broad_hg38_v0_Mills_and_1000G_gold_standard.indels.hg38.vcf \
 --known-sites $hg38_vcf/resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf \
 -L $bed \
--O 04_bqsr/AD2021002.recal_data.table
+-O 04_bqsr/AD2021001.recal_data.table
 ```
 
 
@@ -320,7 +342,7 @@ gatk --java-options "-Xmx20G -Djava.io.tmpdir=./tmp" BaseRecalibrator \
 gatk --java-options "-Xmx20G -Djava.io.tmpdir=./tmp" ApplyBQSR \
 -R $hg38_ref -L $bed \
 -bqsr 04_bqsr/AD2021001.recal_data.table \ # 上一步产生的重校准表
--I 03_markdup/AD2021001.sorted.markdup.bam \
+-I 03_markdup/AD2021001.map.filtered.bam \
 -O 04_bqsr/AD2021001.sorted.markdup.BQSR.bam
 ```
 
@@ -351,7 +373,7 @@ HaplotypeCaller，简称HC。能过通过对活跃区域（也就是<u>与参考
 3. 在给定的read数据下，计算单倍型的可能性。
 4. 分配样本的基因型。
 
-![img](https://raw.githubusercontent.com/PiaoyangGuohai1/Typora-image/main/202205100847335.webp)
+![img](https://markdown-1300560293.cos.ap-guangzhou.myqcloud.com/markdown/202205100847335.webp)
 
 #### HaplotvpeCaller操作方法
 
@@ -444,6 +466,33 @@ gatk --java-options "-Xmx100G -Djava.io.tmpdir=./tmp" CombineGVCFs \
 
 
 
+由于该过程太慢，因此选用分染色体进行循环用以加速。
+
+```shell
+# 将bed文件按照不同染色体进行切分
+for i in $(cat 00_ref/bed/interval.list | awk -F: '{print $1}' | uniq)
+do
+cat 00_ref/bed/interval.list | grep "$i:" > 06_joint_test/small_bed_$i.list
+done
+# 按照bed文件大小将较小的bed文件进行merge，来均衡并行数。
+cat 06_joint_test/small_bed_chr4.list 06_joint_test/small_bed_chr5.list > 06_joint_test/small_bed_chr_4+5.list
+cat 06_joint_test/small_bed_chr6.list 06_joint_test/small_bed_chr7.list > 06_joint_test/small_bed_chr_6+7.list
+cat 06_joint_test/small_bed_chr8.list 06_joint_test/small_bed_chr9.list > 06_joint_test/small_bed_chr_8+9.list
+cat 06_joint_test/small_bed_chr13.list 06_joint_test/small_bed_chr16.list > 06_joint_test/small_bed_chr_13+16.list
+cat 06_joint_test/small_bed_chr14.list 06_joint_test/small_bed_chr15.list > 06_joint_test/small_bed_chr_14+15.list
+cat 06_joint_test/small_bed_chr17.list 06_joint_test/small_bed_chr18.list > 06_joint_test/small_bed_chr_17+18.list
+cat 06_joint_test/small_bed_chr19.list 06_joint_test/small_bed_chr20.list 06_joint_test/small_bed_chr21.list > 06_joint_test/small_bed_chr_19+20+21.list
+cat 06_joint_test/small_bed_chr22.list 06_joint_test/small_bed_chrX.list 06_joint_test/small_bed_chrY.list > 06_joint_test/small_bed_chr_22+X+Y.list
+
+for i in chr1 chr2 chr3 chr_4+5 chr_6+7 chr_8+9 chr10 chr11 chr12 chr_13+16 chr_14+15 chr_17+18 chr_19+20+21 chr_22+X+Y
+do
+nohup gatk --java-options "-Xmx100G" CombineGVCFs -R 00_ref/ucsc-human-hg38/hg38.fa -L 06_joint_test/small_bed_$i.list $(for j in $(ls 05_gvcf/*.gvcf);do echo "--variant $j";done) \
+-O 06_joint_genotype/combined_$i.gvcf > 06_joint_genotype/output_$i.log 2>&1 &
+done
+```
+
+
+
 #### step3：joint genotyping
 
 在上述的两个snp call过程中，只是标记了哪些位点上存在snp，但没有进行基因分型。
@@ -456,14 +505,41 @@ gatk --java-options "-Xmx200G -Djava.io.tmpdir=./tmp" GenotypeGVCFs \
 -G StandardAnnotation \
 --only-output-calls-starting-in-intervals \
 --use-new-qual-calculator \
--O 06_joint/WES_AD_variants.vcf
+-O 06_joint_genotype/WES_AD_variants.vcf
+```
+
+
+
+同样的，如果要分割染色体进行genotyping，使用以下代码，然后使用gatk merge进行合并。
+
+```shell
+for i in chr1 chr2 chr3 chr_4+5 chr_6+7 chr_8+9 chr10 chr11 chr12 chr_13+16 chr_14+15 chr_17+18 chr_19+20+21 chr_22+X+Y
+do
+nohup gatk --java-options "-Xmx200G -Djava.io.tmpdir=./tmp" GenotypeGVCFs \
+-R 00_ref/ucsc-human-hg38/hg38.fa \
+-L 06_joint_test/small_bed_$i.list \
+-V 06_joint_test/combined_$i.gvcf \
+-G StandardAnnotation \
+--only-output-calls-starting-in-intervals \
+--use-new-qual-calculator \
+-O 06_joint_test/WES_AD_variants_$i.vcf >> 06_joint_test/output_$i.log 2>&1 &
+done
+gatk MergeVcfs \
+$(for i in $(ls 06_joint_test/WES_AD_variants_*.vcf);do echo "-I $i";done) \
+-O 06_joint_test/WES_AD_variants.vcf
 ```
 
 
 
 ## 5、变异质控，VQSR
 
-参考：[GATK4.0和全基因组数据分析实践（下）](https://mp.weixin.qq.com/s?__biz=MzAxOTUxOTM0Nw==&mid=2649798455&idx=1&sn=67a7407980a57ce138948eb46992b603&chksm=83c1d52bb4b65c3dde31df94e9686654bf616166c7311b531213ebf0010f67a32ce827e677b1&scene=21#wechat_redirect)
+参考：
+
+[GATK4.0和全基因组数据分析实践（下）](https://mp.weixin.qq.com/s?__biz=MzAxOTUxOTM0Nw==&mid=2649798455&idx=1&sn=67a7407980a57ce138948eb46992b603&chksm=83c1d52bb4b65c3dde31df94e9686654bf616166c7311b531213ebf0010f67a32ce827e677b1&scene=21#wechat_redirect)
+
+[如何正确设置GATK VQSR的模型训练参数](https://zhuanlan.zhihu.com/p/40823886)
+
+
 
 **质控的含义和目的是指通过一定的标准，最大可能地剔除假阳性的结果，并尽可能地保留最多的正确数据**。
 
@@ -494,15 +570,12 @@ gatk --java-options "-Xmx200G -Djava.io.tmpdir=./tmp" GenotypeGVCFs \
 不满足VQSR时的处理：
 
 - GATK对于样本不达标的WES，建议用1000 Genomes Project中的数据代替（将1000G的bam文件和WES样本的bam生成g.vcf文件，再一起做joint call）
-- 
-  不满足这两个条件就只能采用硬过滤进行质控了（通过人为设定一个或者若干个指标阈值，如QUAL，然后把所有不满足阈值的变异位点采用一刀切掉的方法），硬过滤将调用gatk SelectVariants，VariantFiltration， MergeVcfs等功能（具体查看上面的参考）。
+- 不满足这两个条件就只能采用硬过滤进行质控了（通过人为设定一个或者若干个指标阈值，如QUAL，然后把所有不满足阈值的变异位点采用一刀切掉的方法），硬过滤将调用gatk SelectVariants，VariantFiltration， MergeVcfs等功能（具体查看上面的参考）。
 
 
 
 
-### VQSR的2个步骤
-
-
+### 质控（VQSR的2个步骤）
 
 * VariantRecalibrator：即上述原理的1-4，对每个变异位点打分注释VQSLOD value，从而生成一个recalibration文件以及一个xxx.plots.R.pdf(Gaussian mixture model plots)。
 
@@ -559,7 +632,7 @@ gatk VariantRecalibrator -R $hg38_ref -V 06_joint/WES_AD_variants.vcf \
 --resource:1000G,known=false,training=true,truth=false,prior=10.0 $hg38_vcf/resources_broad_hg38_v0_1000G_phase1.snps.high_confidence.hg38.vcf \
 --resource:dbsnp,known=true,training=false,truth=false,prior=2.0 $hg38_vcf/resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf \
 -an DP -an FS -an SOR -an MQ -an ReadPosRankSum -an MQRankSum --mode SNP \
--tranche 100.0 -tranche 99.9 -tranche 99.0 -tranche 95.0 -tranche 90.0 \
+-tranche 100.0 -tranche 99.9 -tranche 99.5 -tranche 99.0 -tranche 95.0 -tranche 90.0 \
 --output 07_BQSR/WES_AD.snp.recal \
 --tranches-file 07_BQSR/WES_AD.snp.tranches \
 --rscript-file 07_BQSR/WES_AD.snp.plots.R
@@ -605,11 +678,34 @@ gatk ApplyVQSR  -R $hg38_ref -V 06_joint/WES_AD_variants.vcf \
 
 参数:
 
-`--truth-sensitivity-filter-level`：可以根据自身需求来设定
+`--truth-sensitivity-filter-level`：与上一步的tranche参数对应，上一步为标记，这一步为过滤。可以根据自身需求来设定，此处设定为99.5。
+
+
+
+注意，該步驟會使用上述生成的R脚本，如果error與R脚本有關，則需要檢查R的環境，最好在conda裏重裝一個R環境。
+
+```shell
+conda install -c conda-forge r-base=4.1.3
+conda install -c r r-ggplot2
+```
+
+
+
+通过阈值标准的SNP将被标记为“PASS”，此处进行提取，未标记PASS的位点不纳入下游分析
+
+```shell
+cat 07_BQSR/WES_AD.snp.VQSR.vcf | grep "PASS" > 07_BQSR/WES_AD.snp.filtered.vcf
+cat 07_BQSR/WES_AD.snp.VQSR.vcf | wc -l # 统计全部位点数目
+## 877950
+cat 07_BQSR/WES_AD.snp.filtered.vcf | wc -l # 统计通过质控的位点数目
+## 789954
+```
 
 
 
 #### Indel的VQSR的过滤
+
+其实INDEL由于置信度较低，在后续分析中将不予考虑。
 
 **生成校准表**
 
@@ -627,7 +723,7 @@ gatk VariantRecalibrator  -R $hg38_ref -V 06_joint/WES_AD_variants.vcf \
 参数：
 
 - `--max-gaussians 4`用于设定Gaussians（clusters of variants that have similar properties）的数目，即减少聚类的组数，从而使得每个组的变异位点数目达到要求
-- 为设置`MQ`过滤
+- 未设置`MQ`过滤
 - **INDEL的VQSR过滤，选用的resource datasets为：**
   - Mills，
     - 对于Indel来说能正在算得上真集的并不多，Mills_and_1000G_gold_standard.indels.hg38.vcf算是其中一个，并被专门做过验证。
@@ -654,6 +750,10 @@ gatk ApplyVQSR  -R $hg38_ref -V 06_joint/WES_AD_variants.vcf \
 
 #### 合并变异
 
+由于INDEL置信度低，在后续分析中不予考虑。该步骤不会执行。
+
+其实就是简单的将上面的vcf文件进行叠加，完成后每个位点有SNP和INDEL两行信息。
+
 ```
 gatk MergeVcfs \
 -I 07_BQSR/WES_AD.snp.VQSR.vcf \
@@ -663,21 +763,139 @@ gatk MergeVcfs \
 
 
 
+
+
+### 硬过滤（不采用）
+
+* `gatk SelectVariants `：该工具可以根据各种标准选择变量的子集，以便于进行某些分析。例如比较case与control，提取满足特定要求的变异或非变异位点，或排除一些意外结果，等等。 
+* `gatk VariantFiltration`：基于INFO和/或FORMAT注释的过滤变量调用。  
+
+```shell
+# 使用SelectVariants，选出SNP
+gatk SelectVariants -select-type SNP -V 07_BQSR/WES_AD.snp.VQSR.vcf -O 07_BQSR/WES_AD.snp.select.vcf
+# 为SNP作过滤
+gatk VariantFiltration -V 07_BQSR/WES_AD.snp.select.vcf \
+--filter-expression "QD < 2.0 || MQ < 40.0 || FS > 60.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" \
+--filter-name "PASS" \
+-O 07_BQSR/WES_AD.snp.filter.vcf
+
+# 使用SelectVariants，选出Indel
+gatk SelectVariants -select-type INDEL -V wes.raw.vcf -O wes.indel.vcf
+# 为Indel作过滤
+gatk VariantFiltration -V wes.indel.vcf --filter-expression "QD < 2.0 || FS > 200.0 || SOR > 10.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" --filter-name "PASS" -O wes.indel.filter.vcf
+```
+
+
+
 ## 6、位点注释
 
+主要使用的工具：`ANNOVAR`
 
 
 
+### ANNOVAR下载数据库（数据库类型和解释也前往[官网](https://annovar.openbioinformatics.org/en/latest/user-guide/download/#annovar-main-package)进行查看下载）
+
+注意有些数据库（如dbnsfp30a和avsnp147）十分大，使用命令行下载会failed。建议复制好网址，在windows上下载。
+
+```shell
+perl annotate_variation.pl -buildver hg38 -downdb -webfrom annovar refGene humandb/ # 来自NCBI的注释
+perl annotate_variation.pl -buildver hg38 -downdb -webfrom annovar knownGene humandb/ # 来自UCSC的注释
+perl annotate_variation.pl -buildver hg38 -downdb cytoBand humandb/
+perl annotate_variation.pl -buildver hg38 -downdb -webfrom annovar exac03 humandb/ 
+perl annotate_variation.pl -buildver hg38 -downdb -webfrom annovar dbnsfp30a humandb/
+perl annotate_variation.pl -buildver hg38 -downdb -webfrom annovar avsnp147 humandb/
+# -buildver 表示version
+# -downdb 下载数据库的指令
+# -webfrom annovar 从annovar提供的镜像下载，不加此参数将寻找数据库本身的源
+# humandb/ 存放于humandb/目录下
+# 注意有些gz压缩的数据库需要解压
+gunzip humandb/hg38_avsnp147.txt.gz
+gunzip humandb/hg38_dbnsfp30a.txt.gz
+```
 
 
 
+### ANNOVAR输入准备
+
+1. 方案一：直接使用vcf文件。`table_annovar.pl`程序可以直接使用vcf程序，需要添加参数`-vcfinput`
+2. 方案二：先转换成`aviput`格式，最后进行注释
 
 
 
+#### 方案一
+
+ANNOVAR使用.avinput格式，如以上代码所示，该格式每列以tab分割，最重要的地方为前5列，分别是
+
+1. 染色体(Chromosome)
+2. 起始位置(Start)
+3. 结束位置(End)
+4. 参考等位基因(Reference Allele)
+5. 替代等位基因(Alternative Allele)
+6. 剩下为注释部分（可选）。
+
+实操：
+
+```shell
+perl ~/software/annovar/annovar/convert2annovar.pl -format vcf4old 07_BQSR/WES_AD.snp.filtered.vcf \
+-includeinfo  -comment -outfile 08_annovar/WES_snp.avinput
+## -format vcf4 指定格式为vcf，在多样本时设置为vcf4old，或增加-allsample
+## -outfile 输出
+## -includeinfo 会保留vcf文件中的所有信息(可选)
+## -comment 会保留vcf文件的头部注释信息(以#开头的行,可选)
+## -allsample 转换格式时vcf中的每一个样本会单独生成一个待注释的vcf文件(可选)
+## -withzyg 输出杂合性，质量，read覆盖度等信息
+## -withfreq  输出等位基因频率
+## -comment 添加VCF的header信息
+cat 08_annovar/WES_snp.avinput | less -S
+## chr1    13273   13273   G       C       hom     43379.72        17354   41.08   6.46
+## chr1    13284   13284   G       A       hom     3010.60 12783   42.78   11.67
+## chr1    13303   13303   G       A       hom     883.60  12586   41.82   3.40
+## chr1    13334   13334   G       A       hom     2613.61 12548   42.95   10.37
+## chr1    13372   13372   G       C       hom     494.61  12259   41.70   3.96
+## chr1    13417   13417   -       GAGA    unknown 17598.40        9401    37.30   13.53
+## chr1    13418   13418   G       A       hom     245.77  9036    34.33   22.34
+## chr1    13504   13504   G       A       hom     62.47   1492    24.28   2.40
+humandb=~/software/annovar/annovar/humandb
+perl ~/software/annovar/annovar/table_annovar.pl 08_annovar/WES_snp.avinput \
+$humandb --buildver hg38 --thread 12 \
+-out 08_annovar/snp_anno \
+-remove -protocol refGene,knownGene,cytoBand,exac03,avsnp147,dbnsfp30a \
+-operation g,g,r,f,f,f -nastring . 
+## -protocol: 注释的数据库
+## -buildver： 基因组版本
+## -nastring：缺省值用 . 填充
+## --otherinfo： 输入文件中第5例后面的info信息也进行输出
+## --operation：数据库的类型，需要与前面的-protocol顺序严格对应，且逗号分割。g为基因注释类型 ，r为区域注释类型，f为过滤注释类型，gx表示基于基因的交叉引用注释（与-xref参数有关）。
+## 数据库数据哪种类型可以前往官网查看说明书，具有详细说明。
+## --gff3dbfile：注释使用的 gff 文件
+## -vcfinput：输入为vcf格式的文件，输出也为vcf格式
+## --thread：线程数
+## --xreffile：为基于基因的注释指定一个交叉引用文件，以便最终输出包括基因的额外列
+```
+
+其他选择：
+
+annovar其实提供了好多个gene-based数据库下载，refGene是NCBI提供的，还有ensembl、UCSC提供的ensGene、knowGene，这三个数据库是有所差别的，至于怎么选择，建议就和使用的参考基因组来源一致即可，这里使用了来自NCBI的refGene和UCSC的knownGene进行基于基因的注释。
+
+-csvout 表示最后输出.csv文件，使用这个参数得到的是csv格式的文件，可以直接用excel打开，但是我没有使用，输出是tab分隔的txt文件，方便后续我写脚本处理。为什么“,”分隔的csv文件不适合处理呢？那是因为refgene的注释结果也是逗号分隔的，在分析的时候就会出现问题。
+
+```
+grep -v "##" out.avinput | cut -f1-9 --complement > gt.txt
+paste hg19_multianno.txt gt.txt > merge.anno.txt
+```
 
 
 
+#### 方案二
 
+直接使用vcf作为输入文件。
+
+```shell
+perl ~/software/annovar/annovar/table_annovar.pl 07_BQSR/WES_AD.snp.VQSR.vcf \
+$humandb -buildver hg38 -out 08_annovar/snp_anno \
+-remove -protocol refGene,cytoBand,exac03,avsnp147,dbnsfp30a \
+-operation gx,r,f,f,f -nastring . -vcfinput -thread 6
+```
 
 
 
