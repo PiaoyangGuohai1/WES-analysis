@@ -86,7 +86,7 @@ fastp \
 
 ### 参数说明：
 
-[[[fastp质控报告解读]]](https://github.com/PiaoyangGuohai1/WES-analysis/blob/main/fastp%E8%B4%A8%E6%8E%A7%E6%8A%A5%E5%91%8A%E8%A7%A3%E8%AF%BB.md)
+[fastp软件介绍](https://github.com/PiaoyangGuohai1/WES-analysis/blob/main/fastp%E8%BD%AF%E4%BB%B6%E8%AF%A6%E7%BB%86%E4%BB%8B%E7%BB%8D.md)
 
 ### 质控结果查看：
 
